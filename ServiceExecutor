@@ -1,0 +1,438 @@
+package com.example.onlypodcastserviceexecutor;
+
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.net.URL;
+import java.net.URLConnection;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+
+import android.app.Service;
+import android.content.Intent;
+import android.media.AudioManager;
+import android.media.MediaPlayer;
+import android.media.MediaPlayer.OnCompletionListener;
+import android.media.MediaPlayer.OnErrorListener;
+import android.media.MediaPlayer.OnPreparedListener;
+import android.os.AsyncTask;
+import android.os.IBinder;
+import android.util.Log;
+import android.widget.Toast;
+
+public class ServiceExecutor extends Service implements OnCompletionListener,
+  	OnErrorListener, OnPreparedListener {
+	private String TAG = "PodcastService";
+	private ExecutorService executor;
+	private final String FILENAME = "temp.dat";
+	private String URL, length;
+	private File storageFile;
+	private boolean fileCreated;
+	private Integer mentionedLength, totalFileDuration, totalFileSize,
+			bufferedFileDuration, bufferedFileSize;
+	private boolean isBufferingAvailable;
+	private MediaPlayer mediaPlayer;
+	private boolean isPaused;
+	public Thread playStreamThread, handlerBufferingThread, fetchDurationThread,
+			saveStreamToFileThread;
+	private int pausedAtMilliSec = 0;
+	private String calledFrom = "XX";
+
+	@Override
+	public int onStartCommand(Intent intent, int flags, int startId) {
+		Toast.makeText(this, "ServCalled", Toast.LENGTH_LONG).show();
+		try {
+			super.onStartCommand(intent, flags, startId);
+			super.onCreate();
+
+			executor = Executors.newFixedThreadPool(5);
+			URL = "http://podcastdownload.npr.org/anon.npr-podcasts/podcast/510299/175030727/npr_175030727.mp3";
+			mentionedLength = totalFileDuration = 600000;
+			Toast.makeText(this, "URL: " + URL, Toast.LENGTH_LONG).show();
+
+			new AsyncsetupFileAndVariables().execute();
+		} catch (Exception e) {
+			Log.e(TAG, "PodcastService: onStartCommand" + e.toString());
+		}
+
+		return START_STICKY;
+	}
+
+	@Override
+	public IBinder onBind(Intent intent) {
+		// TODO Auto-generated method stub
+		return null;
+	}
+
+	private Runnable playStreamRunnable = new Runnable() {
+		@Override
+		public void run() {
+			Log.e(TAG, "playStreamRunnable entered");
+			playStream();
+			Log.e(TAG, "playStreamRunnable completed");
+		}
+	};
+
+	private Runnable saveStreamToFileRunnable = new Runnable() {
+		@Override
+		public void run() {
+			Log.e(TAG, "saveStreamToFileRunnable entered");
+			saveStreamToFile();
+			Log.e(TAG, "saveStreamToFileRunnable completed");
+		}
+	};
+	private Runnable fetchDurationRunnable = new Runnable() {
+		@Override
+		public void run() {
+			try {
+				Log.e(TAG, "fetchDurationRunnable entered");
+				final MediaPlayer tempMP = new MediaPlayer();
+				tempMP.reset();
+				int random = 5 + (int) (Math.random() * ((17 - 5) + 1));
+				tempMP.setAudioSessionId(random);
+				tempMP.setAudioStreamType(AudioManager.STREAM_NOTIFICATION);
+				tempMP.setDataSource(URL);
+				calledFrom = "fetchDurationRunnable";
+				tempMP.setOnPreparedListener(new OnPreparedListener() {
+					@Override
+					public void onPrepared(MediaPlayer mp) {
+						totalFileDuration = tempMP.getDuration();
+						Log.e(TAG, "====>TOTAL FETCHED LENGHT: " + totalFileDuration
+								+ " XML DURATION: " + length);
+						Log.e(TAG, "====>totalFileDuration changed to: "
+								+ totalFileDuration);
+						if (totalFileDuration != mentionedLength) {
+							/*
+							 * TODO : Update Seekbar & used totalFileDuration & reset
+							 * durationErrorAdjust
+							 */
+						}
+					}
+				});
+				tempMP.setOnErrorListener(new OnErrorListener() {
+					@Override
+					public boolean onError(MediaPlayer mp, int what, int extra) {
+						Log.e(TAG, "mplayer Logged Error: What: " + what + " Extra: "
+								+ extra);
+						/*
+						 * TODO: Error -1004: Stream will not run. Faulty Feed.
+						 */
+						switch (what) {
+						case 100:
+							tempMP.release();
+							Log.e(TAG, "Placeholder Error");
+							break;
+						case -1004:
+							Log.e(TAG, "Faulty Stream");
+							/*
+							 * Toast Faulty Stream
+							 */
+							break;
+						case -38:
+							break;
+						default:
+							break;
+						}
+
+						switch (extra) {
+						case -2147483648:
+							Log.e(TAG, "Unsupported Format");
+							/*
+							 * Format not supported
+							 */
+							break;
+						}
+						return false;
+					}
+				});
+				tempMP.prepareAsync();
+			} catch (Exception e) {
+				Log.e(TAG, "fetchDurationRunnable: " + e.toString());
+			}
+			Log.e(TAG, "fetchDurationRunnable completed");
+		}
+	};
+
+	public boolean setupTempFile() {
+		try {
+			storageFile = new File(this.getFilesDir(), FILENAME);
+			if (storageFile.exists()) {
+				storageFile.delete();
+			}
+			storageFile.createNewFile();
+			if (storageFile.exists()) {
+				return true;
+			}
+		} catch (Exception e) {
+			Log.e(TAG, "setupTempFile: " + e.toString());
+		}
+		return false;
+	}
+
+	protected void saveStreamToFile() {
+		try {
+			URL url = new URL(URL);
+			URLConnection conn = url.openConnection();
+			conn.connect();
+			totalFileSize = conn.getContentLength();
+
+			InputStream is = conn.getInputStream();
+			if (is == null) {
+				Log.e(TAG + "downloadStreamInFile", "Unable to download feed " + URL);
+			}
+
+			FileOutputStream fos = this.openFileOutput(FILENAME, MODE_PRIVATE);
+			byte[] buf = new byte[16384];
+
+			do {
+				int numRead = is.read(buf);
+				if (numRead <= 0) {
+					break;
+				} else {
+					fos.write(buf, 0, numRead);
+					bufferedFileSize = (int) storageFile.length();
+				}
+			} while (bufferedFileSize < totalFileSize);
+
+			fos.close();
+			is.close();
+		} catch (IOException e) {
+			/*
+			 * Problem fetching file from URL. Toast user to select different feed
+			 */
+			Log.e(TAG, "saveStreamToFile: " + e.toString());
+		} catch (Exception e) {
+			Log.e(TAG, "saveStreamToFile: " + e.toString());
+		}
+		Log.e(TAG, "saveStreamToFile:" + bufferedFileSize.toString());
+	}
+
+	protected void handlerBuffering() {
+		int choice = 0;
+		try {
+			int WAIT_FOR = 1000;
+			if (mediaPlayer != null
+					&& mediaPlayer.getCurrentPosition() < totalFileDuration) {
+
+				/*
+				 * Case I : Checking if mediaPlayer is about cover all of the contents of buffered
+				 * file, then pause it to avoid playing last bit of content. If it plays all of the
+				 * content the mediaplayer will be in stop status
+				 */
+				Double i = (double) (mediaPlayer.getDuration() - mediaPlayer
+						.getCurrentPosition());
+				i = i / 1000;
+				Log.e(TAG, "mediaPlayer.getDuration()" + mediaPlayer.getDuration());
+				Log.e(TAG, ".....Checking: IS STREAM LEFT < 2sec:" + i.toString());
+
+				if (mediaPlayer.isPlaying()
+						&& (bufferedFileSize < totalFileSize)
+						&& (mediaPlayer.getDuration() - mediaPlayer.getCurrentPosition()) <= 2000) {
+					choice = 1;
+					pausedAtMilliSec = mediaPlayer.getCurrentPosition();
+					Log.e(TAG, "==> Choice 1, MP will be paused. Paused@:"
+							+ pausedAtMilliSec);
+					mediaPlayer.pause();
+					isPaused = true;
+					WAIT_FOR = 5000;
+				} else if (isPaused && !mediaPlayer.isPlaying()) {
+					Log.e(TAG, "==> Choice 2, MP will be resumed. Resumed @: "
+							+ pausedAtMilliSec);
+					choice = 2;
+					/*
+					 * Case II : Media player is paused from above condition. Now needs to resume.
+					 */
+					mediaPlayer.start();
+					mediaPlayer.seekTo(pausedAtMilliSec);
+					isPaused = false;
+					WAIT_FOR = 1000;
+				} else if (!mediaPlayer.isPlaying()) {
+					choice = 3;
+					/*
+					 * Case III : Media player is simply not playing because of some other reason
+					 */
+					pausedAtMilliSec = mediaPlayer.getCurrentPosition();
+					Log.e(TAG, "==> Choice 3, MP stooped abruptly. Resumed @: "
+							+ pausedAtMilliSec);
+					mediaPlayer.reset();
+					FileInputStream fis = new FileInputStream(storageFile);
+					mediaPlayer.setDataSource(fis.getFD());
+					mediaPlayer.setAudioStreamType(AudioManager.STREAM_MUSIC);
+					mediaPlayer.setOnCompletionListener(this);
+					mediaPlayer.setOnErrorListener(this);
+					calledFrom = "handlerBuffering choce 3";
+					mediaPlayer.setOnPreparedListener(this);
+					mediaPlayer.prepareAsync();
+					WAIT_FOR = 1000;
+				}
+				handlerBufferingThread.sleep(WAIT_FOR);
+				handlerBuffering();
+			}
+		} catch (Exception e) {
+			Log.e(TAG, "Choice : " + choice);
+			Log.e(TAG, "handlerBuffering: " + e.toString());
+		}
+	}
+
+	protected void playStream() {
+		try {
+			if (isBufferingAvailable) {
+				/*
+				 * isBufferingPossible means if the temp storage file is created and we can play
+				 * stream from there
+				 */
+				bufferedFileSize = (int) storageFile.length();
+				if (bufferedFileSize < 5000) {
+					playStreamThread.sleep(2000);
+					playStream();
+				} else {
+					if (mediaPlayer == null) {
+						mediaPlayer = new MediaPlayer();
+						mediaPlayer.setOnErrorListener(new OnErrorListener() {
+							@Override
+							public boolean onError(MediaPlayer mp, int what, int extra) {
+								Log.e(TAG, "mediaPlayer Logged Error: What: " + what
+										+ " Extra: " + extra);
+								return false;
+							}
+						});
+					}
+					mediaPlayer.reset();
+					FileInputStream fis = new FileInputStream(storageFile);
+					mediaPlayer.setDataSource(fis.getFD());
+					mediaPlayer.setAudioStreamType(AudioManager.STREAM_MUSIC);
+					mediaPlayer.setOnCompletionListener(this);
+					mediaPlayer.setOnErrorListener(this);
+					calledFrom = "playStream";
+					mediaPlayer.setOnPreparedListener(this);
+					mediaPlayer.prepareAsync();
+					// handler.removeCallbacks(playStreamRunnable);
+				}
+			} else {
+				/*
+				 * Play normal stream using setDataSource(URL)
+				 */
+			}
+		} catch (IOException e) {
+			Log.e(TAG, "playStream: " + e.toString());
+		} catch (Exception e) {
+			Log.e(TAG, "playStream: " + e.toString());
+		}
+	}
+
+	@Override
+	public void onCompletion(MediaPlayer arg0) {
+		try {
+			Log.e(TAG, "onCompletion Started");
+			Log.e(TAG, "onCompletion : mediaPlayer TotalDuration: " + totalFileDuration);
+			Log.e(TAG,
+					"onCompletion : mediaPlayer CurrentPosition: "
+							+ mediaPlayer.getCurrentPosition());
+			if (handlerBufferingThread != null
+					&& mediaPlayer.getCurrentPosition() >= totalFileDuration) {
+				handlerBufferingThread = null;
+				mediaPlayer.reset();
+			}
+		} catch (Exception e) {
+			Log.e(TAG, "onCompletion: Exception" + e.toString());
+		}
+	}
+
+	@Override
+	public boolean onError(MediaPlayer mp, int what, int extra) {
+		try {
+			Log.e(TAG, "Error occured in MediaPlayer: WHAT: " + what + "EXTRA:" + extra);
+		} catch (Exception e) {
+			Log.e(TAG, "MediaPlayer onError: Exception" + e.toString());
+		}
+		return false;
+	}
+
+	@Override
+	public void onPrepared(MediaPlayer mp) {
+		Log.e(TAG, "Called From: " + calledFrom);
+		calledFrom = "deleted";
+		mediaPlayer.start();
+		mediaPlayer.seekTo(pausedAtMilliSec);
+		// handler.post(handlerBufferingRunnable);
+		if (handlerBufferingThread == null) {
+			Log.e(TAG, "inside onPrepared starting handlerBufferingThread");
+			handlerBufferingThread = new Thread(handlerBufferingRunnable);
+			// handlerBufferingThread.start();
+			executor.execute(handlerBufferingThread);
+			executor.shutdown();
+		} else {
+			// handlerBuffering();
+		}
+	}
+
+	protected Runnable handlerBufferingRunnable = new Runnable() {
+		@Override
+		public void run() {
+			Log.e(TAG, "handlerBufferingRunnable entered");
+			handlerBuffering();
+			Log.e(TAG, "handlerBufferingRunnable completed");
+		}
+	};
+
+	class AsyncsetupFileAndVariables extends AsyncTask {
+		@Override
+		protected Object doInBackground(Object... params) {
+			try {
+				Log.e(TAG, "doInBackground entered");
+				fileCreated = setupTempFile();
+
+				if (fileCreated) {
+					isBufferingAvailable = true;
+					/*
+					 * Fetching actual stream duration in a seperate thread.
+					 * 
+					 * This will be called only in case of fileCreated == true. Because only then we
+					 * require to find out the actual duration seperatly. In case of fileCreated ==
+					 * false, we will be already calling MediaPlayer's setDatasource(URL) & at time
+					 * we can find out the duration without calling thread seperatly.
+					 */
+//					fetchDurationThread = new Thread(fetchDurationRunnable);
+					// fetchDurationThread.start();
+//					executor.execute(fetchDurationThread);
+
+					// handler.removeCallbacks(setupFileRunnable);
+					// handler.post(saveStreamToFileRunnable);
+
+					saveStreamToFileThread = new Thread(saveStreamToFileRunnable);
+					// saveStreamToFileThread.start();
+					executor.execute(saveStreamToFileThread);
+
+				} else {
+					/*
+					 * TODO: if file not created then play normal stream
+					 */
+					isBufferingAvailable = false;
+				}
+				/*
+				 * Starting the thread to play the feed
+				 */
+				playStreamThread = new Thread(playStreamRunnable);
+				// playStreamThread.start();
+				executor.execute(playStreamThread);
+
+			} catch (Exception e) {
+				return e;
+			}
+			Log.e(TAG, "doInBackground exited");
+			return null;
+		}
+
+		@Override
+		protected void onPostExecute(Object result) {
+			if (result instanceof Exception) {
+				Log.e(TAG, "AsyncsetupFileAndVariables: " + result.toString());
+			}
+			super.onPostExecute(result);
+		}
+
+	}
+
+}
