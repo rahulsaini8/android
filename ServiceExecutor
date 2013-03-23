@@ -112,12 +112,6 @@ public class ServiceExecutor extends Service implements OnCompletionListener,
 								+ " XML DURATION: " + length);
 						Log.e(TAG, "====>totalFileDuration changed to: "
 								+ totalFileDuration);
-						if (totalFileDuration != mentionedLength) {
-							/*
-							 * TODO : Update Seekbar & used totalFileDuration & reset
-							 * durationErrorAdjust
-							 */
-						}
 					}
 				});
 				tempMP.setOnErrorListener(new OnErrorListener() {
@@ -125,35 +119,6 @@ public class ServiceExecutor extends Service implements OnCompletionListener,
 					public boolean onError(MediaPlayer mp, int what, int extra) {
 						Log.e(TAG, "mplayer Logged Error: What: " + what + " Extra: "
 								+ extra);
-						/*
-						 * TODO: Error -1004: Stream will not run. Faulty Feed.
-						 */
-						switch (what) {
-						case 100:
-							tempMP.release();
-							Log.e(TAG, "Placeholder Error");
-							break;
-						case -1004:
-							Log.e(TAG, "Faulty Stream");
-							/*
-							 * Toast Faulty Stream
-							 */
-							break;
-						case -38:
-							break;
-						default:
-							break;
-						}
-
-						switch (extra) {
-						case -2147483648:
-							Log.e(TAG, "Unsupported Format");
-							/*
-							 * Format not supported
-							 */
-							break;
-						}
-						return false;
 					}
 				});
 				tempMP.prepareAsync();
@@ -208,9 +173,6 @@ public class ServiceExecutor extends Service implements OnCompletionListener,
 			fos.close();
 			is.close();
 		} catch (IOException e) {
-			/*
-			 * Problem fetching file from URL. Toast user to select different feed
-			 */
 			Log.e(TAG, "saveStreamToFile: " + e.toString());
 		} catch (Exception e) {
 			Log.e(TAG, "saveStreamToFile: " + e.toString());
@@ -288,10 +250,6 @@ public class ServiceExecutor extends Service implements OnCompletionListener,
 	protected void playStream() {
 		try {
 			if (isBufferingAvailable) {
-				/*
-				 * isBufferingPossible means if the temp storage file is created and we can play
-				 * stream from there
-				 */
 				bufferedFileSize = (int) storageFile.length();
 				if (bufferedFileSize < 5000) {
 					playStreamThread.sleep(2000);
@@ -317,12 +275,8 @@ public class ServiceExecutor extends Service implements OnCompletionListener,
 					calledFrom = "playStream";
 					mediaPlayer.setOnPreparedListener(this);
 					mediaPlayer.prepareAsync();
-					// handler.removeCallbacks(playStreamRunnable);
 				}
 			} else {
-				/*
-				 * Play normal stream using setDataSource(URL)
-				 */
 			}
 		} catch (IOException e) {
 			Log.e(TAG, "playStream: " + e.toString());
@@ -365,15 +319,13 @@ public class ServiceExecutor extends Service implements OnCompletionListener,
 		calledFrom = "deleted";
 		mediaPlayer.start();
 		mediaPlayer.seekTo(pausedAtMilliSec);
-		// handler.post(handlerBufferingRunnable);
 		if (handlerBufferingThread == null) {
 			Log.e(TAG, "inside onPrepared starting handlerBufferingThread");
 			handlerBufferingThread = new Thread(handlerBufferingRunnable);
-			// handlerBufferingThread.start();
 			executor.execute(handlerBufferingThread);
 			executor.shutdown();
 		} else {
-			// handlerBuffering();
+
 		}
 	}
 
@@ -386,23 +338,8 @@ public class ServiceExecutor extends Service implements OnCompletionListener,
 
 				if (fileCreated) {
 					isBufferingAvailable = true;
-					/*
-					 * Fetching actual stream duration in a seperate thread.
-					 * 
-					 * This will be called only in case of fileCreated == true. Because only then we
-					 * require to find out the actual duration seperatly. In case of fileCreated ==
-					 * false, we will be already calling MediaPlayer's setDatasource(URL) & at time
-					 * we can find out the duration without calling thread seperatly.
-					 */
-					// fetchDurationThread = new Thread(fetchDurationRunnable);
-					// fetchDurationThread.start();
-					// executor.execute(fetchDurationThread);
-
-					// handler.removeCallbacks(setupFileRunnable);
-					// handler.post(saveStreamToFileRunnable);
 
 					saveStreamToFileThread = new Thread(saveStreamToFileRunnable);
-					// saveStreamToFileThread.start();
 					executor.execute(saveStreamToFileThread);
 
 				} else {
@@ -415,7 +352,6 @@ public class ServiceExecutor extends Service implements OnCompletionListener,
 				 * Starting the thread to play the feed
 				 */
 				playStreamThread = new Thread(playStreamRunnable);
-				// playStreamThread.start();
 				executor.execute(playStreamThread);
 
 			} catch (Exception e) {
