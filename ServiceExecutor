@@ -29,15 +29,13 @@ public class ServiceExecutor extends Service implements OnCompletionListener,
 	private final String FILENAME = "temp.dat";
 	private String URL, length;
 	private File storageFile;
-	private boolean fileCreated;
+	private boolean fileCreated, isBufferingAvailable, isPaused;
 	private Integer mentionedLength, totalFileDuration, totalFileSize, bufferedFileSize;
-	private boolean isBufferingAvailable;
 	private MediaPlayer mediaPlayer;
-	private boolean isPaused;
 	public Thread playStreamThread, handlerBufferingThread, fetchDurationThread,
 			saveStreamToFileThread;
 	private int pausedAtMilliSec = 0;
-	private String calledFrom = "XX";
+	private String calledFrom = "XX"; // For debugging
 
 	@Override
 	public int onStartCommand(Intent intent, int flags, int startId) {
@@ -46,11 +44,22 @@ public class ServiceExecutor extends Service implements OnCompletionListener,
 			super.onStartCommand(intent, flags, startId);
 			super.onCreate();
 
+			/*
+			 * Creating new ExecutorService with fixed number of threads = 5
+			 */
 			executor = Executors.newFixedThreadPool(5);
 			URL = "http://podcastdownload.npr.org/anon.npr-podcasts/podcast/510299/175030727/npr_175030727.mp3";
+
+			/*
+			 * Harcoded time for initial use. Will be changed in 'fetchDurationRunnable' bellow when
+			 * actual duration of stream will be fethced in background.
+			 */
 			mentionedLength = totalFileDuration = 600000;
 			Toast.makeText(this, "URL: " + URL, Toast.LENGTH_LONG).show();
 
+			/*
+			 * Calling AsyncTask to start the process
+			 */
 			new AsyncCalled().execute();
 		} catch (Exception e) {
 			Log.e(TAG, "PodcastService: onStartCommand" + e.toString());
@@ -107,7 +116,10 @@ public class ServiceExecutor extends Service implements OnCompletionListener,
 				tempMP.setOnPreparedListener(new OnPreparedListener() {
 					@Override
 					public void onPrepared(MediaPlayer mp) {
+
+						// SETTING UP STREAM DURATION IN A VARIABLE
 						totalFileDuration = tempMP.getDuration();
+
 						Log.e(TAG, "====>TOTAL FETCHED LENGHT: " + totalFileDuration
 								+ " XML DURATION: " + length);
 						Log.e(TAG, "====>totalFileDuration changed to: "
@@ -119,9 +131,13 @@ public class ServiceExecutor extends Service implements OnCompletionListener,
 					public boolean onError(MediaPlayer mp, int what, int extra) {
 						Log.e(TAG, "mplayer Logged Error: What: " + what + " Extra: "
 								+ extra);
+						return false;
 					}
 				});
+
 				tempMP.prepareAsync();
+				// NOTE: WE ARE NOT PLAYING THE STREAM HERE. JUST FETCHING THE TIME. PLAYBACK IS
+				// DONE IN SEPERATE THREAD
 			} catch (Exception e) {
 				Log.e(TAG, "fetchDurationRunnable: " + e.toString());
 			}
@@ -173,6 +189,9 @@ public class ServiceExecutor extends Service implements OnCompletionListener,
 			fos.close();
 			is.close();
 		} catch (IOException e) {
+			/*
+			 * Problem fetching file from URL. Toast user to select different feed
+			 */
 			Log.e(TAG, "saveStreamToFile: " + e.toString());
 		} catch (Exception e) {
 			Log.e(TAG, "saveStreamToFile: " + e.toString());
@@ -180,81 +199,27 @@ public class ServiceExecutor extends Service implements OnCompletionListener,
 		Log.e(TAG, "saveStreamToFile:" + bufferedFileSize.toString());
 	}
 
-	protected void handlerBuffering() {
-		int choice = 0;
-		try {
-			int WAIT_FOR = 1000;
-			if (mediaPlayer != null
-					&& mediaPlayer.getCurrentPosition() < totalFileDuration) {
-
-				/*
-				 * Case I : Checking if mediaPlayer is about cover all of the contents of buffered
-				 * file, then pause it to avoid playing last bit of content. If it plays all of the
-				 * content the mediaplayer will be in stop status
-				 */
-				Double i = (double) (mediaPlayer.getDuration() - mediaPlayer
-						.getCurrentPosition());
-				i = i / 1000;
-				Log.e(TAG, "mediaPlayer.getDuration()" + mediaPlayer.getDuration());
-				Log.e(TAG, ".....Checking: IS STREAM LEFT < 2sec:" + i.toString());
-
-				if (mediaPlayer.isPlaying()
-						&& (bufferedFileSize < totalFileSize)
-						&& (mediaPlayer.getDuration() - mediaPlayer.getCurrentPosition()) <= 2000) {
-					choice = 1;
-					pausedAtMilliSec = mediaPlayer.getCurrentPosition();
-					Log.e(TAG, "==> Choice 1, MP will be paused. Paused@:"
-							+ pausedAtMilliSec);
-					mediaPlayer.pause();
-					isPaused = true;
-					WAIT_FOR = 5000;
-				} else if (isPaused && !mediaPlayer.isPlaying()) {
-					Log.e(TAG, "==> Choice 2, MP will be resumed. Resumed @: "
-							+ pausedAtMilliSec);
-					choice = 2;
-					/*
-					 * Case II : Media player is paused from above condition. Now needs to resume.
-					 */
-					mediaPlayer.start();
-					mediaPlayer.seekTo(pausedAtMilliSec);
-					isPaused = false;
-					WAIT_FOR = 1000;
-				} else if (!mediaPlayer.isPlaying()) {
-					choice = 3;
-					/*
-					 * Case III : Media player is simply not playing because of some other reason
-					 */
-					pausedAtMilliSec = mediaPlayer.getCurrentPosition();
-					Log.e(TAG, "==> Choice 3, MP stooped abruptly. Resumed @: "
-							+ pausedAtMilliSec);
-					mediaPlayer.reset();
-					FileInputStream fis = new FileInputStream(storageFile);
-					mediaPlayer.setDataSource(fis.getFD());
-					mediaPlayer.setAudioStreamType(AudioManager.STREAM_MUSIC);
-					mediaPlayer.setOnCompletionListener(this);
-					mediaPlayer.setOnErrorListener(this);
-					calledFrom = "handlerBuffering choce 3";
-					mediaPlayer.setOnPreparedListener(this);
-					mediaPlayer.prepareAsync();
-					WAIT_FOR = 1000;
-				}
-				handlerBufferingThread.sleep(WAIT_FOR);
-				handlerBuffering();
-			}
-		} catch (Exception e) {
-			Log.e(TAG, "Choice : " + choice);
-			Log.e(TAG, "handlerBuffering: " + e.toString());
-		}
-	}
-
 	protected void playStream() {
 		try {
 			if (isBufferingAvailable) {
+				/*
+				 * isBufferingPossible means if the temp storage file is created and we can play
+				 * stream from there.
+				 */
+
+				/*
+				 * Waiting while we have enough data in file to play the stream (for say 5000
+				 * bytes).
+				 * 
+				 * ****PLEASE NOTE: I'M USING SLEEP METHOD BELOW ON ExecutorService. WILL THAT CAUSE
+				 * ISSUE IN LONG RUN ?? ****
+				 */
 				bufferedFileSize = (int) storageFile.length();
 				if (bufferedFileSize < 5000) {
 					playStreamThread.sleep(2000);
 					playStream();
 				} else {
+					// Setting up MediaPlayer
 					if (mediaPlayer == null) {
 						mediaPlayer = new MediaPlayer();
 						mediaPlayer.setOnErrorListener(new OnErrorListener() {
@@ -272,16 +237,110 @@ public class ServiceExecutor extends Service implements OnCompletionListener,
 					mediaPlayer.setAudioStreamType(AudioManager.STREAM_MUSIC);
 					mediaPlayer.setOnCompletionListener(this);
 					mediaPlayer.setOnErrorListener(this);
-					calledFrom = "playStream";
+					calledFrom = "playStream"; // FOR DEBUGGING
 					mediaPlayer.setOnPreparedListener(this);
-					mediaPlayer.prepareAsync();
+					mediaPlayer.prepareAsync(); // When mediaPlayer is prepared in onPrepared(), it
+												// will inturn call buffering thread.
 				}
 			} else {
+				/*
+				 * TODO
+				 */
 			}
 		} catch (IOException e) {
 			Log.e(TAG, "playStream: " + e.toString());
 		} catch (Exception e) {
 			Log.e(TAG, "playStream: " + e.toString());
+		}
+	}
+
+	protected void handlerBuffering() {
+		/*
+		 * By buffering I mean, recursively checking if the file has enough data to continuously
+		 * play the stream.
+		 * 
+		 * In every call it checks if the temp file has less than 2 sec stream remaining & the file
+		 * is still downloading then pause the media player for 5 seconds.
+		 * 
+		 * It maintains a variable 'pausedAtMilliSec' which records where the stream is paused so
+		 * that if the player also abruptly stops, it can be resumed from there.
+		 * 
+		 * Also 'WAIT_FOR' variable will maintain the sleeping time of this thread
+		 */
+		int choice = 0; // FOR DEBUGGING
+		try {
+			int WAIT_FOR = 1000; // DEFAULT
+			if (mediaPlayer != null
+					&& mediaPlayer.getCurrentPosition() < totalFileDuration) {
+
+				/*
+				 * Case I : Checking if mediaPlayer is about to cover all of the contents of
+				 * buffered file (< 2 sec), then pause it to avoid playing last bit of content. If
+				 * it plays all of the content the mediaplayer will be in stop status
+				 */
+				Double i = (double) (mediaPlayer.getDuration() - mediaPlayer
+						.getCurrentPosition());
+				i = i / 1000;
+				Log.e(TAG, "mediaPlayer.getDuration()" + mediaPlayer.getDuration());
+				Log.e(TAG, ".....Checking: IS STREAM LEFT < 2sec:" + i.toString());
+
+				if (mediaPlayer.isPlaying()
+						&& (bufferedFileSize < totalFileSize)
+						&& (mediaPlayer.getDuration() - mediaPlayer.getCurrentPosition()) <= 2000) {
+
+					choice = 1; // FOR DEBUGGING
+					pausedAtMilliSec = mediaPlayer.getCurrentPosition();
+					Log.e(TAG, "==> Choice 1, MP will be paused. Paused@:"
+							+ pausedAtMilliSec);
+					mediaPlayer.pause();
+					isPaused = true;
+					WAIT_FOR = 5000; // SLEEP FOR 5 SEC
+
+				} else if (isPaused && !mediaPlayer.isPlaying()) {
+
+					/*
+					 * Case II : Media player is paused from above condition. Now needs to resume.
+					 */
+					Log.e(TAG, "==> Choice 2, MP will be resumed. Resumed @: "
+							+ pausedAtMilliSec);
+					choice = 2; // FOR DEBUGGING
+
+					mediaPlayer.start();
+					mediaPlayer.seekTo(pausedAtMilliSec);
+					isPaused = false;
+					WAIT_FOR = 1000;
+				} else if (!mediaPlayer.isPlaying()) {
+					choice = 3; // FOR DEBUGGING
+					/*
+					 * Case III : Media player is simply not playing because of some other reason.
+					 * Happens for many reasons - can't figure out every.
+					 */
+					pausedAtMilliSec = mediaPlayer.getCurrentPosition();
+					Log.e(TAG, "==> Choice 3, MP stooped abruptly. Resumed @: "
+							+ pausedAtMilliSec);
+					/*
+					 * Resetting mediaplayer here because there may a chance that media player
+					 * stopped & still there is stream to play, so it went to onCompletion()
+					 * 
+					 * Can resetting many times cause any issue?
+					 */
+					mediaPlayer.reset();
+					FileInputStream fis = new FileInputStream(storageFile);
+					mediaPlayer.setDataSource(fis.getFD());
+					mediaPlayer.setAudioStreamType(AudioManager.STREAM_MUSIC);
+					mediaPlayer.setOnCompletionListener(this);
+					mediaPlayer.setOnErrorListener(this);
+					calledFrom = "handlerBuffering choce 3"; // FOR DEBUGGING
+					mediaPlayer.setOnPreparedListener(this);
+					mediaPlayer.prepareAsync();
+					WAIT_FOR = 1000;
+				}
+				handlerBufferingThread.sleep(WAIT_FOR);
+				handlerBuffering(); // Recursion call
+			}
+		} catch (Exception e) {
+			Log.e(TAG, "Choice : " + choice);
+			Log.e(TAG, "handlerBuffering: " + e.toString());
 		}
 	}
 
@@ -317,15 +376,18 @@ public class ServiceExecutor extends Service implements OnCompletionListener,
 	public void onPrepared(MediaPlayer mp) {
 		Log.e(TAG, "Called From: " + calledFrom);
 		calledFrom = "deleted";
+		// STARTING MEDIA PLAYER
 		mediaPlayer.start();
 		mediaPlayer.seekTo(pausedAtMilliSec);
+
+		// STARTING THE THREAD FOR HANDLING BUFFERING
 		if (handlerBufferingThread == null) {
 			Log.e(TAG, "inside onPrepared starting handlerBufferingThread");
 			handlerBufferingThread = new Thread(handlerBufferingRunnable);
 			executor.execute(handlerBufferingThread);
 			executor.shutdown();
 		} else {
-
+			// TODO
 		}
 	}
 
@@ -334,22 +396,30 @@ public class ServiceExecutor extends Service implements OnCompletionListener,
 		protected Object doInBackground(Object... params) {
 			try {
 				Log.e(TAG, "doInBackground entered");
-				fileCreated = setupTempFile();
+				fileCreated = setupTempFile(); // This function will create a temp file to store the
+												// downloaded stream
 
 				if (fileCreated) {
 					isBufferingAvailable = true;
+					/*
+					 * Fetching actual stream duration in a seperate thread. Will be used while
+					 * handling buffering
+					 */
+					fetchDurationThread = new Thread(fetchDurationRunnable);
+					executor.execute(fetchDurationThread);
 
+					/*
+					 * Thread to download the stream into a file
+					 */
 					saveStreamToFileThread = new Thread(saveStreamToFileRunnable);
 					executor.execute(saveStreamToFileThread);
 
 				} else {
-					/*
-					 * TODO: if file not created then play normal stream
-					 */
-					isBufferingAvailable = false;
+
 				}
 				/*
-				 * Starting the thread to play the feed
+				 * Starting the thread to play the feed simultaneously while downloading. This
+				 * runnable will in turn initiate the thread for handle buffering.
 				 */
 				playStreamThread = new Thread(playStreamRunnable);
 				executor.execute(playStreamThread);
@@ -364,7 +434,7 @@ public class ServiceExecutor extends Service implements OnCompletionListener,
 		@Override
 		protected void onPostExecute(Object result) {
 			if (result instanceof Exception) {
-				Log.e(TAG, "AsyncsetupFileAndVariables: " + result.toString());
+				// TODO: Toast Exception
 			}
 			super.onPostExecute(result);
 		}
